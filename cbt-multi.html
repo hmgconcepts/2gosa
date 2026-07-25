@@ -134,6 +134,8 @@ const MM = {
       questions = questions.concat(qs); subjects.push(name);
     }
     if (subjects.length < 2) { alert('Add at least TWO subjects, each with a name and CSV questions.'); return; }
+    const bankCheck=CBT.validateQuestionBank(questions);
+    if(!bankCheck.ok){alert('Cannot publish this exam:\n\n'+bankCheck.errors.slice(0,8).join('\n'));return;}
     const exam = {
       title, subject: 'MULTI-SUBJECT: ' + subjects.join(', '), class: v('mm-class'), term: v('mm-term'), session: v('mm-session'),
       assessment_type: 'exam', topic: subjects.join(', '), report_column: v('mm-col'),

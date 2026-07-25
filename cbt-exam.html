@@ -478,6 +478,10 @@ textarea.form-input{min-height:80px;resize:vertical}
       this.root().innerHTML = '<div class="card"><h2>🚫 Closed</h2><p>This exam is no longer accepting submissions.</p></div>';
       return;
     }
+    if(!String(data.engine_version||'').startsWith('v5.1')){
+      this.root().innerHTML='<div class="card"><div class="notice notice-error"><h2 style="margin-top:0">⚠️ Exam temporarily unavailable</h2><p>This database is still using an obsolete CBT grading engine that can record incorrect zero marks. The exam has been stopped before you begin.</p><p><strong>Administrator:</strong> back up Supabase, then run the latest <code>database/complete-schema.sql</code>. Confirm the final message says CBT V5.1 is installed, then reload this page.</p></div></div>';
+      return;
+    }
     this.data = data;
     this.school = applySchoolIdentity(data.school || null);
     if (window.CBT && typeof window.CBT.prepareForStudent === 'function') window.CBT.prepareForStudent(this.data);
@@ -568,6 +572,7 @@ textarea.form-input{min-height:80px;resize:vertical}
       student_id_ref: this.student.id_ref,
       student_type: this.data.exam_mode,
       client_ref: this.clientRef,
+      client_engine: 'v5.1',
       // Client grading is only a resilience preview. The canonical RPC ignores
       // these values and re-grades against the private server-side answer key.
       score: graded.score, total: graded.total, percent: graded.percent,
@@ -581,23 +586,26 @@ textarea.form-input{min-height:80px;resize:vertical}
     };
     let resp = null;
     for (let attempt = 0; attempt < 6; attempt++) {
-      try { resp = await window.sb.rpc('cbt_submit', { p_payload: payload }); } catch (e) { resp = { error: e }; }
-      if (resp && !resp.error && resp.data && resp.data.saved) break;
-      if (resp && !resp.error && resp.data && ['closed','not_started','attempts_exhausted','exam_not_found'].includes(resp.data.error)) break;
+      try { resp = await window.sb.rpc('cbt_submit_v5', { p_payload: payload }); } catch (e) { resp = { error: e }; }
+      if (resp && !resp.error && resp.data && resp.data.saved && String(resp.data.engine_version||'').startsWith('v5.1')) break;
+      if (resp && !resp.error && resp.data && ['closed','not_started','attempts_exhausted','exam_not_found','answer_key_missing','question_bank_empty'].includes(resp.data.error)) break;
+      if(resp && resp.error && /cbt_submit_v5|schema cache|function/i.test(String(resp.error.message||resp.error))) break;
       const wait = Math.min(8000, (500 * Math.pow(2, attempt))) + Math.floor(Math.random() * 600);
       this.root().insertAdjacentHTML('beforeend', '<p style="text-align:center;color:#64748b">Submitting… retry ' + (attempt + 1) + ' of 6</p>');
       await new Promise(r => setTimeout(r, wait));
     }
-    const terminalError=resp&&resp.data&&['closed','not_started','attempts_exhausted','exam_not_found'].includes(resp.data.error);
-    if ((!resp || resp.error || !resp.data || !resp.data.saved) && !terminalError) {
+    const confirmed=!!(resp&&!resp.error&&resp.data&&resp.data.saved&&String(resp.data.engine_version||'').startsWith('v5.1'));
+    const terminalError=resp&&resp.data&&['closed','not_started','attempts_exhausted','exam_not_found','answer_key_missing','question_bank_empty'].includes(resp.data.error);
+    if (!confirmed && !terminalError) {
       try { const q = JSON.parse(localStorage.getItem('cbt-pending-queue') || '[]'); q.push(payload); localStorage.setItem('cbt-pending-queue', JSON.stringify(q.slice(-10))); } catch (_) {}
-    } else if (resp && resp.data && resp.data.saved) {
-      try { localStorage.removeItem('cbt-pending-queue'); } catch (_) {}
+    } else if (confirmed) {
+      try { localStorage.removeItem('cbt-pending-queue'); localStorage.removeItem('cbt-draft-' + (this.data && this.data.code)); } catch (_) {}
     }
-    try { localStorage.removeItem('cbt-draft-' + (this.data && this.data.code)); } catch (e) {}
-    if (!resp || resp.error || !resp.data || !resp.data.saved) {
+    if (!confirmed) {
       const blob = new Blob([JSON.stringify({ payload, graded }, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob), message=(resp&&resp.data&&(resp.data.message||resp.data.error))||'The server could not confirm this submission.';
+      const url = URL.createObjectURL(blob);
+      const rpcMissing=resp&&resp.error&&/cbt_submit_v5|schema cache|function/i.test(String(resp.error.message||resp.error));
+      const message=rpcMissing?'The V5.1 grading engine is not installed in this database. An administrator must run the latest database/complete-schema.sql before results can be accepted.':((resp&&resp.data&&(resp.data.message||resp.data.error))||'The server could not confirm this submission.');
       this.root().innerHTML =
         '<div class="card"><h2>⚠️ Submission not confirmed</h2>' +
         '<p>'+esc(message)+'</p><p>Your answers remain saved locally. If your teacher asks for proof, download the encrypted-safe answer payload below; it contains no answer key.</p>' +
@@ -622,7 +630,8 @@ textarea.form-input{min-height:80px;resize:vertical}
       '<div class="card" style="text-align:center;padding:40px">' +
       '<div class="score-circle" style="background:linear-gradient(135deg,' + gradeColor + ',var(--sc-accent))"><div class="pct">' + (pct || 0) + '%</div><div class="lbl">Grade ' + (d.grade || graded.grade || 'F') + '</div></div>' +
       '<h2 style="margin:0 0 8px">🎉 Exam Complete</h2>' +
-      '<p style="color:#64748b;margin:0 0 16px">' + esc(this.student.name) + ' · ' + esc(this.data.title || 'Exam') + '</p>' +
+      '<p style="color:#64748b;margin:0 0 6px">' + esc(this.student.name) + ' · ' + esc(this.data.title || 'Exam') + '</p>' +
+      '<p style="color:#16a34a;font-size:.72rem;font-weight:800;margin:0 0 16px">SERVER VERIFIED · GRADING ENGINE '+esc(d.engine_version||'v5.1')+'</p>' +
       '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;max-width:520px;margin:0 auto">' +
       '<div style="padding:10px;background:#f8fafc;border-radius:10px"><div style="font-size:1.4rem;font-weight:900">' + (d.score != null ? d.score : graded.score) + '</div><div style="font-size:.7rem;color:#64748b;text-transform:uppercase">Score</div></div>' +
       '<div style="padding:10px;background:#f8fafc;border-radius:10px"><div style="font-size:1.4rem;font-weight:900">' + (d.correct_count != null ? d.correct_count : graded.correct) + '</div><div style="font-size:.7rem;color:#64748b;text-transform:uppercase">Correct</div></div>' +
@@ -644,8 +653,8 @@ textarea.form-input{min-height:80px;resize:vertical}
         const rest = [];
         for (const p of q) {
           try {
-            const r = await window.sb.rpc('cbt_submit', { p_payload: p });
-            if (!(r && r.data && r.data.saved)) rest.push(p);
+            const r = await window.sb.rpc('cbt_submit_v5', { p_payload: Object.assign({client_engine:'v5.1'},p) });
+            if (!(r && !r.error && r.data && r.data.saved && String(r.data.engine_version||'').startsWith('v5.1'))) rest.push(p);
           } catch (_) { rest.push(p); }
         }
         localStorage.setItem('cbt-pending-queue', JSON.stringify(rest));
