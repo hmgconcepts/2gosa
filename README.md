@@ -162,3 +162,7 @@ This platform is a proud part of the **HMG Academy Ecosystem**. It's optimized f
 
 ## School Connect v1 Final Deployment Note
 Run `database/complete-schema.sql` once in Supabase SQL Editor for a fresh deployment. It is now cumulative and self-contained: it includes base schema, CBT, voting, report cards, enterprise tables, class fee structures, product store, status audit log, parent-child access policies, staff check-in deadline settings, and schema-cache reload notifications. The smaller update SQL files are retained only for upgrading older deployed clients.
+
+## School Connect V5 cumulative repair
+
+The maintained V5 repair documentation is in `docs/v5/`. Before deployment read `BUG-FIX-REPORT.md` and `DEPLOYMENT-GUIDE-V5.md`. The CBT zero-score fix requires the new `database/complete-schema.sql`; frontend-only deployment is insufficient. No paid AI API is used.
