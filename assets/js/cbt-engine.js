@@ -35,7 +35,17 @@ const CBT = {
     let type = String(q.type || q.question_type || 'mcq').toLowerCase().replace(/[\s\/\\-]+/g,'_');
     if (['tf','boolean','truefalse','true_or_false','yes_no','yesno'].includes(type)) type = 'true_false';
     let options = Array.isArray(q.options) ? q.options.slice() : [];
-    if (!options.length) ['a','b','c','d','e','option_a','option_b','option_c','option_d','option_e','opt_a','opt_b','opt_c','opt_d'].forEach(k => { if (q[k] != null && String(q[k]).trim() !== '') options.push(String(q[k])); });
+    if (!options.length && typeof q.options === 'string' && q.options.trim()) {
+      try { const parsed=JSON.parse(q.options); if(Array.isArray(parsed)) options=parsed.slice(); }
+      catch(_) { options=q.options.split(/\s*[|;]\s*/).filter(Boolean); }
+    }
+    // Read one naming family at a time. The former loop appended both `a` and
+    // `option_a` when imported banks carried aliases, duplicating every choice.
+    if (!options.length) {
+      for (const keys of [['a','option_a','opt_a'],['b','option_b','opt_b'],['c','option_c','opt_c'],['d','option_d','opt_d'],['e','option_e','opt_e']]) {
+        const k=keys.find(x=>q[x]!=null && String(q[x]).trim()!==''); if(k) options.push(String(q[k]));
+      }
+    }
     // FIX V3: If options still empty but answer is a number, try choices/alternatives
     if (!options.length && (q.choices || q.alternatives)) {
       const src = q.choices || q.alternatives;
@@ -61,7 +71,10 @@ const CBT = {
       section: q.section || q.subject_section || q.subject || '',
       subject: q.subject || q.section || q.subject_section || '',
       difficulty: q.difficulty || '',
-      tolerance: q.tolerance || q.accept || ''
+      tolerance: q.tolerance || q.accept || '',
+      passage: q.passage || q.context || q.case_text || q.comprehension || '',
+      media_url: q.media_url || q.media || q.image_url || q.image || q.audio_url || q.video_url || '',
+      metadata: q.metadata || null
     };
   },
 
@@ -131,6 +144,7 @@ const CBT = {
       // FIX V3: More lenient skip detection — only skip if truly empty
       if (given == null || given === undefined) { skipped++; return; }
       if (typeof given === 'string' && given.trim() === '') { skipped++; return; }
+      if (Array.isArray(given) && given.length === 0) { skipped++; return; }
       const ok = this.isCorrect(q, given);
       if (ok) { score += mark; correct++; }
       else { score -= Number(exam.negative_mark || 0) || 0; wrong++; }
@@ -142,9 +156,27 @@ const CBT = {
   },
 
   isCorrect(q, given) {
-    const norm = v => String(v == null ? '' : v).trim().toLowerCase();
-    let g = norm(given);
+    const norm = v => String(v == null ? '' : v).trim().toLowerCase().replace(/\s+/g,' ');
     const ans = q.answer != null ? q.answer : q.correct;
+    const opts = (q.options || []).map(norm);
+    const canonicalOption = v => {
+      const x=norm(v);
+      if (/^[a-z]$/.test(x)) { const i=x.charCodeAt(0)-97; if(opts[i]!=null)return opts[i]; }
+      return x;
+    };
+    const tokens = v => {
+      if (Array.isArray(v)) return v.map(canonicalOption).filter(Boolean);
+      if (v && typeof v === 'object') return Object.values(v).map(canonicalOption).filter(Boolean);
+      let s=String(v==null?'':v).trim();
+      if (/^\s*\[/.test(s)) { try { const p=JSON.parse(s); if(Array.isArray(p))return p.map(canonicalOption).filter(Boolean); } catch(_){} }
+      return s.split(/\s*[,;|]\s*/).map(canonicalOption).filter(Boolean);
+    };
+    if (String(q.type||'').toLowerCase()==='multi_select') {
+      const a=[...new Set(tokens(ans))].sort(), gset=[...new Set(tokens(given))].sort();
+      return a.length>0 && a.length===gset.length && a.every((x,i)=>x===gset[i]);
+    }
+    let g = norm(given);
+    // For non-multi questions an answer array means accepted alternatives.
     if (Array.isArray(ans)) return ans.map(norm).includes(g);
     if (q.type === 'numeric') {
       const tol = Math.abs(Number(q.tolerance)) || 0.0001;
@@ -169,7 +201,6 @@ const CBT = {
     // ENTERPRISE V6 (issue 12 grading): students answer option questions with a
     // LETTER (A/B/C/D) while teachers may store the answer as the option TEXT
     // (e.g. "True") — or vice-versa. Accept both directions.
-    const opts = (q.options || []).map(norm);
     if (opts.length) {
       const letterToText = (x) => (x.length === 1 && x >= 'a' && x <= 'z') ? opts[x.charCodeAt(0) - 97] : undefined;
       const textToLetter = (x) => { const i = opts.indexOf(x); return i >= 0 ? String.fromCharCode(97 + i) : undefined; };
@@ -218,7 +249,7 @@ const CBT = {
   // slim list is a few KB. Full rows are still fetched per-exam whenever the
   // teacher edits, previews, exports or appends questions.
   async listExams() { if (!this._sb) return {data:null,error:{message:'Database not configured'}}; return await this._sb.from('cbt_exams').select('id,code,title,subject,class,term,session,assessment_type,report_column,max_score,duration,duration_min,attempt_limit,select_count,randomise,negative_mark,exam_mode,is_open,is_archived,is_entrance,pass_mark,release_results,anti_cheat_config,certificate_enabled,start_at,close_at,teacher_id,created_at,updated_at').order('created_at',{ascending:false}).limit(100); },
-  async createExam(exam) { if (!this._sb) return {data:null,error:{message:'Database not configured'}}; exam = exam || {}; exam.code = (exam.code || this._generateCode(6)).toUpperCase(); exam.created_at = new Date().toISOString(); if (!exam.teacher_id && window.SC_PROFILE && SC_PROFILE.id) exam.teacher_id = SC_PROFILE.id; exam.anti_cheat_config = Object.assign({tab_switch:true,window_blur:true,copy_paste:true,right_click:true,fullscreen:true,watermark:true,devtools:true,max_violations:5}, exam.anti_cheat_config || {}); return await this._sb.from('cbt_exams').insert(exam).select().single(); },
+  async createExam(exam) { if (!this._sb) return {data:null,error:{message:'Database not configured'}}; exam = exam || {}; exam.code = (exam.code || this._generateCode(6)).toUpperCase(); exam.created_at = new Date().toISOString(); if (!exam.teacher_id && window.SC_PROFILE && SC_PROFILE.id) exam.teacher_id = SC_PROFILE.id; exam.anti_cheat_config = Object.assign({tab_switch:true,window_blur:true,copy_paste:true,right_click:true,fullscreen:true,watermark:true,devtools:true,max_violations:5}, exam.anti_cheat_config || {}); const bank=(Array.isArray(exam.csv_data)&&exam.csv_data.length)?exam.csv_data:((Array.isArray(exam.questions)&&exam.questions.length)?exam.questions:[]); if(bank.length){exam.csv_data=bank;exam.questions=bank;} return await this._sb.from('cbt_exams').insert(exam).select().single(); },
   _generateCode(len) { const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let r=''; for(let i=0;i<len;i++) r+=chars.charAt(Math.floor(Math.random()*chars.length)); return r; },
 
   advancedPromptTemplate(subject, klass, topic, count) {
@@ -247,7 +278,9 @@ const CBT = {
         topic: get('topic','lesson') || '',
         tolerance: get('tolerance','accept') || '',
         section: get('section','subject','subject_section','exam_subject') || '',
-        subject: get('subject','section','subject_section','exam_subject') || ''
+        subject: get('subject','section','subject_section','exam_subject') || '',
+        passage: get('passage','context','case_text','comprehension') || '',
+        media_url: get('media_url','media','image_url','image','audio_url','video_url') || ''
       };
       questions.push(this.normalizeQuestion(q, i));
     });
