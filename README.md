@@ -179,17 +179,11 @@ V5.4 adds re-importable paginated portable archives, local archive analysis, exp
 
 V5.5 adds fully dynamic admin-defined report headings/maxima, admission-only registered CBT identity, password recovery, consistent navigation icons, comprehensive per-page assistant guidance, clearer Rubrics/Transcripts and term/session academic-performance insights. Back up and run the latest `database/complete-schema.sql`, deploy all files, configure the Supabase recovery redirect and hard-refresh. See `docs/v5/V5.5-FLEXIBLE-REPORTS-REGISTERED-CBT-RECOVERY-INSIGHTS.md`.
 
-## School Connect V5.6.1 — one complete schema and SQL repairs
+## School Connect V5.7 final professional audit
 
-V5.6.1 makes `database/complete-schema.sql` the only production SQL path. It
-contains all V5.1–V5.6.1 objects, has one authoritative definition per function,
-ends with a self-sufficiency check and is verified by executing it twice. Do not
-run focused/versioned SQL after it; only a separate demo project additionally runs
-`demo-users.sql` and `demo-seed.sql`.
-
-The release fixes open/multi-subject CBT failing with `record "s" is not assigned
-yet` and demo seeding failing with PostgreSQL `42702 exam_id is ambiguous`.
-Registered identity enforcement remains intact. Deploying frontend files without
-rerunning the complete schema is insufficient.
-
-See `docs/v5/V5.6.1-COMPLETE-SCHEMA-CBT-DEMO-SQL-FIX.md`.
+V5.7 adds institutional principal/proprietor/examination-officer Drive signatures
+with background removal, editable/deletable public examination campaigns, enhanced
+custom documents, performance-based bulk report comments, separated leadership
+navigation and registered-value dropdowns. Back up and run only the full updated
+`database/complete-schema.sql`, deploy every file and hard-refresh. See
+`docs/v5/V5.7-FINAL-PROFESSIONAL-AUDIT-AND-ENHANCEMENTS.md`.
