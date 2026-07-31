@@ -528,7 +528,7 @@ const ReportEngine = {
     let counts={};try{const rr=await db.from('cbt_results').select('exam_id').in('exam_id',exams.map(e=>e.id)).limit(20000);(rr.data||[]).forEach(r=>counts[r.exam_id]=(counts[r.exam_id]||0)+1);}catch(_){}
     this._bulkCBT={exams,columns:cr.data||[],counts,filtered:[]};
     const columnNames=this.unique((cr.data||[]).filter(c=>c.subject==='*').map(c=>c.name));
-    const body=`<div class="notice" style="background:#eff6ff;border-color:#93c5fd;color:#1e3a8a"><b>Bulk workflow — three clear steps</b><ol style="margin:6px 0 0;padding-left:20px"><li>Filter by class, subject, term and session.</li><li>Review the matching exams/results and select what to push.</li><li>Use each exam's destination or override it, then push once.</li></ol></div>
+    const body=`<div class="notice" style="background:#eff6ff;border-color:#93c5fd;color:#1e3a8a"><b>Bulk workflow — three clear steps</b><ol style="margin:6px 0 0;padding-left:20px"><li>Filter by class, subject, term and session.</li><li>Review the matching exams/results and select what to push.</li><li>Use each exam's destination or override it, then push once.</li></ol><p style="margin:8px 0 0"><b>🎯 Multi-subject CBT exams route automatically:</b> each candidate's per-subject scores are split and written to the matching <b>subject line</b> of their report card (English → English, Mathematics → Mathematics, …) in the destination column — no re-typing, no manual splitting, and re-pushing updates the same rows instead of duplicating.</p></div>
       <div class="grid grid-2">
        <div class="form-group"><label>Class filter</label><select id="be-class" class="form-select" onchange="ReportEngine.refreshCBTBulkPreview()">${this.selectOptions(exams.map(e=>e.class),'All classes')}</select></div>
        <div class="form-group"><label>Subject filter</label><select id="be-subject" class="form-select" onchange="ReportEngine.refreshCBTBulkPreview()">${this.selectOptions(exams.flatMap(e=>{const a=e.anti_cheat_config&&e.anti_cheat_config.subjects;return Array.isArray(a)?a:[e.subject]}),'All subjects')}</select></div>
@@ -608,6 +608,25 @@ const ReportEngine = {
       done++;if(typeof onProgress==='function')try{onProgress(done,names.length,n);}catch(_){}
     }
     return{html:pages.join('\n'),count:names.length,names};
+  },
+  /* V6.3 FIX #7: real report-column picker. Loads the ADMIN-CREATED assessment
+     columns (deduplicated by heading) plus registered terms/sessions, so any
+     "push to report card" modal (e.g. punctuality points) offers exactly the
+     columns the admin designed — never a hard-coded ca1/ca2/ca3/exam list. */
+  async reportPickerOptions(){
+    const db=this.sb||(typeof sb!=='undefined'?sb:null);
+    if(!db)return{columns:[],terms:[],sessions:[]};
+    const out={columns:[],terms:[],sessions:[]};
+    try{
+      const cr=await db.from('assessment_columns').select('id,name,max_mark,class,term,session').order('position');
+      const seen=new Set();
+      (cr.data||[]).forEach(c=>{const k=String(c.name||'').trim().toLowerCase();if(!k||seen.has(k))return;seen.add(k);out.columns.push({id:c.id,name:c.name,max_mark:c.max_mark});});
+    }catch(_){/* table may be empty on fresh installs */}
+    try{
+      const lr=await db.from('lookups').select('kind,value').in('kind',['term','session']).order('position');
+      (lr.data||[]).forEach(l=>{if(l.kind==='term'&&!out.terms.includes(l.value))out.terms.push(l.value);if(l.kind==='session'&&!out.sessions.includes(l.value))out.sessions.push(l.value);});
+    }catch(_){}
+    return out;
   },
   print(title, html, landscape=false){
     const w=window.open('','_blank'); if(!w){ if(typeof toast==='function')toast('Popup blocked. Please allow popups.','warning'); return; }

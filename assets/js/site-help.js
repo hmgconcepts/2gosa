@@ -11,9 +11,9 @@ const SiteHelp = {
     'academic-records': '📈 **Academic Records** — View class broadsheets (all students × all subjects) and subject broadsheets (one subject, all students). Auto-calculates totals, averages, positions, grades.',
     'report-cards': '🎓 **Report Cards** — Auto-generated student report cards: all subjects, grades, positions, affective/psychomotor traits, teacher comments, school stamp and signatures. Print one student, or use **🖨️ Bulk Print ALL Report Cards (per class)** — the whole class builds with a progress bar and prints one-per-page in a single job (or Save as PDF).',
     'timetable': '🗓️ **Timetable** — Class and teacher timetables. Conflict detection. Print schedules.',
-    'fees': '💰 **School Fees** — Fee structure per class. Track payments, balances. Generate e-receipts. View fee reports.',
+    'fees': '💰 **School Fees** — Fee structure per class; record payments, track balances, print e-receipts. Privacy built in: students see ONLY their own payments, parents only their children\'s; bursar and staff have full read/write.',
     'payment-history': '🧾 **Payment History** — Student payment records. Print e-receipts with school logo and authorized signature.',
-    'cbt': '💻 **CBT Exams** — Computer-Based Testing. Create exams with 17 question types (MCQ, true/false, fill-blank, essay, numeric, etc.). Anti-cheat features. Auto-grading. Multi-subject support with tabs.',
+    'cbt': '💻 **CBT Exams** — Computer-Based Testing: 17 question types, anti-cheat (tab/copy/fullscreen watch), auto-grading, multi-subject tabs. NEW: optional **📸 camera snapshots** and **🎙️ audio monitoring** per exam (great for take-home CBT assignments) — review pictures via the 📸 button on each exam row and delete them all with one click after marking.',
     'cbt-exam': '📝 **CBT Exam Taking** — Students take exams here. Timer, question navigation, flag questions, calculator, math keyboard. Multi-subject exams show tabs at top. Auto-submits when time expires.',
     'assignments': '📝 **Assignments** — Post homework/assignments. Track submissions. Grade and provide feedback. Students and parents can view.',
     'eresources': '📚 **E-Resources / Notes** — Upload and share study materials, notes, PDFs. Organized by subject and class. Students and parents can access.',
@@ -50,6 +50,9 @@ const SiteHelp = {
     'entrance': '🚪 **Entrance & Assessments** — Public exams that candidates sit WITHOUT an account (entrance, placement). Create the exam in CBT, tick entrance, share the code/link. Results appear under the exam register.',
     'transcripts': '📄 **Transcripts** — Multi-term/multi-session academic transcripts per student, compiled from stored results. For leavers, university applications and transfers.',
     'developer': '👨‍💻 **About the Developer** — Adewale Samson Adeagbo, founder of HMG Concepts. The ecosystem promise: “Recurring payments should not keep your schools from having online presences.” One-time payment, lifetime platform, your data always exportable.',
+    'leave': '🏖️ **Leave Management** — Staff submit leave requests (sick, casual, earned, study, maternity); every request starts as PENDING. **Only an administrator can approve or reject** — the status box is hidden from staff and the database stamps who decided and when.',
+    'idcards': '🪪 **ID Cards** — Branded student/staff cards with photo and scannable QR. Print one card, or type a class in the Class box and click **🖨 Print ALL** to bulk-print that class in one job (empty box = whole school).',
+    'substitutions': '🔁 **Substitutions / Cover** — When a teacher is absent, ADMIN assigns the cover teacher here (only admin can create/edit). Staff see the plan read-only so everyone knows who covers which period.',
     'default': "ℹ️ **Help** — I'm the School Assistant. Every page also has: ① this **❓ Page Help** button (what the page does, who uses it, why it matters), ② the **ℹ️ Help** button in the top bar, and ③ the 💬 chat assistant for step-by-step questions. New here? Start at the **Dashboard**, and admins should visit the **🛡️ Platform Health Console** to confirm backups, keep-alive and security are all green."
   },
   
