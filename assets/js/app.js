@@ -815,6 +815,11 @@ const App = {
         '<td><small>'+esc(r.href)+'</small></td></tr>').join('') +
       '</tbody></table></div></section>';
     content.insertAdjacentHTML('beforeend', html);
+    /* V10.6 (#5): the Permission Manager is a long, wide matrix — freeze its
+       two-row header at the top and the Page/Module column at the left so
+       admins always see WHICH page and WHICH role a checkbox belongs to,
+       on desktop and mobile alike. */
+    try { const t = document.querySelector('#role-access-manager table'); if (t && window.CRUD && CRUD.applyStickyTable) CRUD.applyStickyTable(t); } catch(_) {}
   },
 
   async saveAccessManager() {
@@ -1345,7 +1350,7 @@ const App = {
         h += '<div style="border:2px solid ' + (totalDue > 0 ? '#fca5a5' : '#86efac') + ';border-radius:14px;padding:14px;margin-bottom:12px;background:' + (totalDue > 0 ? '#fef2f2' : '#f0fdf4') + '">' +
           '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:baseline">' +
           '<b style="font-size:1.02rem">' + esc(s.full_name) + (f.class ? ' · ' + esc(f.class) : '') + '</b>' +
-          '<span style="font-size:.8rem;color:var(--gray-500)">' + esc(f.term || '') + (f.session ? ' · ' + esc(f.session) : '') + '</span></div>' +
+          '<span style="font-size:.8rem;color:var(--gray-500)">' + esc(f.term || '') + (f.session ? ' · ' + esc(f.session) : '') + (f.override ? ' · <span style="color:#7c3aed;font-weight:800" title="The bursar set a personal total for this student — it replaces the class fee structure figure.">✏️ personal total</span>' : '') + '</span></div>' +
           '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:8px">' +
           '<div><div style="font-size:1.5rem;font-weight:900;color:#0f172a">' + money(cur, f.bill) + '</div><div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--gray-500)">Total fees this term</div></div>' +
           '<div><div style="font-size:1.5rem;font-weight:900;color:#15803d">' + money(cur, f.paid) + '</div><div style="font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--gray-500)">Paid</div></div>' +

@@ -1017,6 +1017,87 @@ if(['class','student_class','candidate_class','last_class'].includes(k))Object.a
        session / department…) built from the actual data — one-click slicing
        on promotion and every other big admin table. */
     try { CRUD.injectColumnFilters(moduleId, tableEl, cols, filteredData, bulkable ? 1 : 0); } catch(_) {}
+    /* V10.6 (#5): sticky headers + frozen identity column on EVERY module
+       table — Students, Staff, Results, Fees, all of them. */
+    try { CRUD.applyStickyTable(tableEl); } catch(_) {}
+  },
+
+  /* =====================================================================
+     V10.6 (#5): STICKY TABLE ENGINE — applied to every CRUD module table
+     (and reusable by any page via CRUD.applyStickyTable(table)).
+       • The header row(s) FREEZE at the top while records scroll under
+         them (vertical stickiness inside the .table-wrap scroll area).
+       • The first data column (the identity column — Full name for
+         Students & Profiles, etc.) FREEZES at the left while the other
+         columns scroll horizontally, so on a phone you always know WHOSE
+         row you are reading. A checkbox bulk column stays with it.
+       • Pure CSS position:sticky — zero scroll listeners, native-smooth
+         on mobile; a shadow edge appears when the frozen column is
+         actually covering scrolled content.
+     ===================================================================== */
+  applyStickyTable(tableEl) {
+    if (!tableEl || tableEl.dataset.scSticky) return;
+    const wrap = tableEl.closest('.table-wrap');
+    if (!wrap) return;
+    tableEl.dataset.scSticky = '1';
+    // one-time global stylesheet
+    if (!document.getElementById('sc-sticky-table-css')) {
+      const st = document.createElement('style');
+      st.id = 'sc-sticky-table-css';
+      st.textContent =
+        '.sc-sticky-wrap{max-height:70vh;overflow:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch;position:relative}' +
+        '.sc-sticky-wrap thead th{position:sticky;top:0;z-index:5;background:var(--gray-100,#f1f5f9);box-shadow:0 1px 0 var(--gray-300,#cbd5e1)}' +
+        '.sc-sticky-wrap thead tr:nth-child(2) th{top:var(--sc-h1,42px)}' +
+        '.sc-sticky-wrap td.sc-col-pin,.sc-sticky-wrap th.sc-col-pin{position:sticky;left:0;z-index:3;background:var(--white,#fff)}' +
+        '.sc-sticky-wrap thead th.sc-col-pin{z-index:6;background:var(--gray-100,#f1f5f9)}' +
+        '.sc-sticky-wrap td.sc-col-pin2,.sc-sticky-wrap th.sc-col-pin2{position:sticky;z-index:3;background:var(--white,#fff)}' +
+        '.sc-sticky-wrap thead th.sc-col-pin2{z-index:6;background:var(--gray-100,#f1f5f9)}' +
+        '.sc-sticky-wrap.sc-x-scrolled td.sc-col-edge,.sc-sticky-wrap.sc-x-scrolled th.sc-col-edge{box-shadow:2px 0 6px -2px rgba(15,23,42,.25)}' +
+        '[data-theme="dark"] .sc-sticky-wrap td.sc-col-pin,[data-theme="dark"] .sc-sticky-wrap td.sc-col-pin2{background:#0f172a}' +
+        '[data-theme="dark"] .sc-sticky-wrap thead th.sc-col-pin,[data-theme="dark"] .sc-sticky-wrap thead th.sc-col-pin2{background:#111c30}' +
+        '@media(max-width:640px){.sc-sticky-wrap{max-height:75vh}.sc-sticky-wrap td.sc-col-pin,.sc-sticky-wrap th.sc-col-pin{max-width:46vw;overflow:hidden;text-overflow:ellipsis}}';
+      document.head.appendChild(st);
+    }
+    wrap.classList.add('sc-sticky-wrap');
+    // Two-row headers (e.g. the Page Access & Permission Manager): the second
+    // row sticks right below the first.
+    try {
+      const h1 = tableEl.querySelector('thead tr:first-child th');
+      if (h1 && tableEl.querySelectorAll('thead tr').length > 1) {
+        wrap.style.setProperty('--sc-h1', (h1.getBoundingClientRect().height || 42) + 'px');
+      }
+    } catch(_) {}
+    // Pin the identity column: if col 1 is a bulk-select checkbox column,
+    // pin it AND col 2 (offset by the checkbox width); else pin col 1.
+    try {
+      const firstRow = tableEl.querySelector('tbody tr');
+      const headCells = tableEl.querySelectorAll('thead tr:first-child th');
+      let bulk = false;
+      if (firstRow) {
+        const td1 = firstRow.querySelector('td');
+        bulk = !!(td1 && td1.querySelector('input[type="checkbox"]') && String(td1.textContent||'').trim()==='');
+      }
+      const pin = (cell, cls) => { if (cell) cell.classList.add(cls); };
+      tableEl.querySelectorAll('tr').forEach(tr => {
+        const cells = tr.children;
+        if (!cells.length) return;
+        if (bulk) {
+          pin(cells[0], 'sc-col-pin');
+          if (cells.length > 1) { pin(cells[1], 'sc-col-pin2'); cells[1].classList.add('sc-col-edge'); }
+        } else {
+          pin(cells[0], 'sc-col-pin'); cells[0].classList.add('sc-col-edge');
+        }
+      });
+      if (bulk) {
+        // second pinned column needs a left offset = width of the checkbox col
+        const w = (firstRow && firstRow.children[0] ? firstRow.children[0].getBoundingClientRect().width : 44);
+        tableEl.querySelectorAll('.sc-col-pin2').forEach(c => { c.style.left = w + 'px'; });
+      }
+      // shadow only when horizontally scrolled
+      wrap.addEventListener('scroll', () => {
+        wrap.classList.toggle('sc-x-scrolled', wrap.scrollLeft > 2);
+      }, { passive: true });
+    } catch(_) {}
   },
 
   /* V7.6 #4: built-in demo showcase rows. Pure client-side "ghost" records for
@@ -1559,8 +1640,21 @@ if(['class','student_class','candidate_class','last_class'].includes(k))Object.a
               if (tEl && !tEl.value && f.term) tEl.value = f.term;
               if (sEl && !sEl.value && f.session) sEl.value = f.session;
             }
-            totEl.ondblclick = () => { totEl.readOnly = false; totEl.focus(); if (typeof toast === 'function') toast('Total due unlocked for manual override (admin discretion).', 'info', 4000); };
-            totEl.oninput = recompute;
+            /* V10.3 (#4) ROOT-CAUSE FIX: the double-click override used to be
+               saved into fee_payments.fee_total but sc_student_fee_state kept
+               recomputing the bill from the CLASS fee structure, so the
+               student dashboard ignored the adjusted figure. Now the unlock
+               remembers the auto value; if the admin actually CHANGES it, the
+               row is flagged total_overridden=true and the V10.3 RPC treats
+               that figure as this student's personal total due everywhere
+               (dashboard, receipts, family panel). */
+            totEl.dataset.scAutoTotal = totEl.value || '';
+            totEl.ondblclick = () => { totEl.readOnly = false; totEl.focus(); if (typeof toast === 'function') toast('Total due unlocked for manual override (admin discretion). If you change it, the new figure becomes this student\'s personal total due on their dashboard and receipts.', 'info', 7000); };
+            totEl.oninput = () => {
+              recompute();
+              const auto = Number(totEl.dataset.scAutoTotal || 0);
+              totEl.dataset.scOverridden = (!totEl.readOnly && Math.abs((Number(totEl.value) || 0) - auto) > 0.005) ? '1' : '';
+            };
             if (paidEl) paidEl.oninput = recompute;
             recompute();
           } catch (_) {}
@@ -1640,7 +1734,15 @@ if(['class','student_class','candidate_class','last_class'].includes(k))Object.a
       if (c.key.indexOf('data.') === 0) dataObj[c.key.slice(5)] = v; else payload[c.key] = v;
     });
     if (missing) { toast(missing + ' is required.', 'warning'); return; }
-    if (d.generic) { payload.module = d.module; payload.data = dataObj; if (!payload.title && dataObj.title) payload.title = dataObj.title; if (!id && window.SC_PROFILE && SC_PROFILE.id) payload.created_by = SC_PROFILE.id; }
+    if (d.generic) { payload.module = d.module; payload.data = dataObj; if (!payload.title && dataObj.title) payload.title = dataObj.title; if (!id && window.SC_PROFILE && SC_PROFILE.id) payload.created_by = SC_PROFILE.id;
+      /* V10.6 (#3) ROOT CAUSE of "Lost & Found never appears for students/
+         parents": module_records defaults audience='private', and the RLS
+         select policy hides private rows from non-staff. Community modules
+         are meant for the WHOLE school — stamp them 'all' so every role's
+         dashboard Live Feed and page lists can read them. */
+      const communityModules=['lost_found','parent_meeting','cafeteria','menu','school_calendar','gallery','surveys','broadcast'];
+      if (!payload.audience && communityModules.includes(d.module)) payload.audience='all';
+    }
     if (!id && ['complaints','helpdesk_tickets'].includes(d.table) && window.SC_PROFILE && SC_PROFILE.id) payload.submitted_by = SC_PROFILE.id;
     if (!id && d.table === 'health' && window.SC_PROFILE && SC_PROFILE.id) { payload.recorded_by_id = SC_PROFILE.id; if (!payload.recorded_by && SC_PROFILE.full_name) payload.recorded_by = SC_PROFILE.full_name; }
     if (!id && ['academic_print_records','reports'].includes(d.table) && window.SC_PROFILE && SC_PROFILE.id) payload.generated_by = SC_PROFILE.id;
@@ -1683,6 +1785,17 @@ if(['class','student_class','candidate_class','last_class'].includes(k))Object.a
     // ENTERPRISE V11 (issue 13): auto-compute fee balance when blank
     if (d.table === 'fee_payments' && payload.balance == null && payload.fee_total != null) {
       payload.balance = Math.max(0, (Number(payload.fee_total) || 0) - (Number(payload.amount_paid) || 0));
+    }
+    /* V10.3 (#4): persist the DELIBERATE total-due override flag. Only set
+       when the admin double-click-unlocked the field AND changed the value —
+       an untouched auto-filled total keeps the class fee structure authority.
+       The self-healing save strips the column automatically on databases
+       that have not run database/v10.3 yet. */
+    if (d.table === 'fee_payments') {
+      try {
+        const totEl = document.getElementById('cf-' + this.fid('fee_total'));
+        if (totEl && totEl.dataset.scOverridden === '1') payload.total_overridden = true;
+      } catch(_) {}
     }
     // ENTERPRISE FINAL V2 (#8): normalise balance to a number when present
     if (d.table === 'fee_payments' && payload.balance != null) payload.balance = Number(payload.balance) || 0;

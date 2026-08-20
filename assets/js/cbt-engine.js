@@ -5,6 +5,10 @@
    ==================================================================== */
 const CBT = {
   QUESTION_TYPES_17: ['mcq','multi_select','true_false','fill_blank','short_answer','essay','numeric','matching','ordering','drag_drop','hotspot','comprehension','case_study','image_based','audio_based','video_based','math_equation'],
+  /* V10.3: the full advanced family (Tutoring Connect parity). Structured
+     types render with purpose-built controls via assets/js/cbt-types.js and
+     grade with per-row partial credit server-side (database/v10.3). */
+  QUESTION_TYPES_ADVANCED: ['cloze','multi_numeric','categorization','matrix','hot_text','code','assertion_reason','likert','timeline','error_spotting','classification','scenario_mcq','data_interpretation','graph_read','oral_prompt','peer_review','true_false_justify','map_label','code_output','citation'],
   _sb: null,
   calcState: { mode: 'basic', memory: 0, display: '' },
 
@@ -87,6 +91,17 @@ const CBT = {
       accepted_answers: pick('accept','accepted_answers','alternatives') || '',
       passage: pick('passage','context','case_text','comprehension') || '',
       media_url: pick('media_url','media','image_url','image','audio_url','video_url') || '',
+      /* V10.3: structured-type payloads (Tutoring Connect parity). `items`
+         carries matching pairs / ordering lists / matrix rows / numeric
+         parts / hot-text chunks; `pool` and `blanks` are the sanitised
+         render shapes the V10.3 server getter emits for candidates. */
+      items: pick('items','pairs') ?? null,
+      pairs: pick('pairs') ?? null,
+      pool: pick('pool') ?? null,
+      blanks: pick('blanks') ?? null,
+      unit: pick('unit') || '',
+      mrq_aon: pick('mrq_aon','mrqaon','all_or_nothing') ?? null,
+      distractors: pick('distractors') || '',
       metadata: pick('metadata') || null
     };
   },
@@ -158,6 +173,17 @@ const CBT = {
       if (given == null || given === undefined) { skipped++; return; }
       if (typeof given === 'string' && given.trim() === '') { skipped++; return; }
       if (Array.isArray(given) && given.length === 0) { skipped++; return; }
+      /* V10.3: structured types earn per-row partial credit in the client
+         preview too, mirroring the canonical server engine. Anything the
+         advanced grader does not own returns null and falls back here. */
+      let frac = null;
+      try { if (window.CBTTypes && CBTTypes.handles && CBTTypes.handles(q)) { const g = CBTTypes.grade(q, given); if (g && !g.pending && !g.unmarkable) frac = g.fraction; } } catch(_) {}
+      if (frac != null) {
+        if (frac >= 0.999) { score += mark; correct++; }
+        else if (frac <= 0.001) { score -= Number(exam.negative_mark || 0) || 0; wrong++; }
+        else { score += Math.round(mark * frac * 100) / 100; wrong++; }
+        return;
+      }
       const ok = this.isCorrect(q, given);
       if (ok) { score += mark; correct++; }
       else { score -= Number(exam.negative_mark || 0) || 0; wrong++; }
@@ -262,7 +288,45 @@ const CBT = {
   // slim list is a few KB. Full rows are still fetched per-exam whenever the
   // teacher edits, previews, exports or appends questions.
   async listExams() { if (!this._sb) return {data:null,error:{message:'Database not configured'}}; const all=[];for(let from=0;from<5000;from+=500){const r=await this._sb.from('cbt_exams').select('id,code,title,subject,class,term,session,assessment_type,report_column,max_score,duration,duration_min,attempt_limit,select_count,randomise,negative_mark,exam_mode,is_open,is_archived,is_entrance,pass_mark,release_results,anti_cheat_config,certificate_enabled,start_at,close_at,teacher_id,created_at,updated_at').order('created_at',{ascending:false}).range(from,from+499);if(r.error)return r;all.push(...(r.data||[]));if(!r.data||r.data.length<500)break;}return{data:all,error:null}; },
-  async createExam(exam) { if (!this._sb) return {data:null,error:{message:'Database not configured'}}; exam = exam || {}; exam.code = (exam.code || this._generateCode(6)).toUpperCase(); exam.created_at = new Date().toISOString(); if (!exam.teacher_id && window.SC_PROFILE && SC_PROFILE.id) exam.teacher_id = SC_PROFILE.id; exam.anti_cheat_config = Object.assign({tab_switch:true,window_blur:true,copy_paste:true,right_click:true,fullscreen:true,watermark:true,devtools:true,max_violations:5}, exam.anti_cheat_config || {}); const bank=(Array.isArray(exam.csv_data)&&exam.csv_data.length)?exam.csv_data:((Array.isArray(exam.questions)&&exam.questions.length)?exam.questions:[]); if(bank.length){exam.csv_data=bank;exam.questions=bank;} return await this._sb.from('cbt_exams').insert(exam).select().single(); },
+  async createExam(exam) {
+    if (!this._sb) return {data:null,error:{message:'Database not configured'}};
+    exam = exam || {};
+    exam.code = (exam.code || this._generateCode(6)).toUpperCase();
+    exam.created_at = new Date().toISOString();
+    /* V10.4 ROOT-CAUSE FIX (reported: "new row violates row-level security
+       policy for table cbt_exams"): teacher_id was stamped from SC_PROFILE,
+       which loads ASYNCHRONOUSLY after sign-in. A fast click sent
+       teacher_id = NULL, and the RLS insert policy (teacher_id = auth.uid())
+       failed even for the right teacher. Now the authenticated user id is
+       fetched directly from the session as a guaranteed fallback. */
+    if (!exam.teacher_id && window.SC_PROFILE && SC_PROFILE.id) exam.teacher_id = SC_PROFILE.id;
+    if (!exam.teacher_id) {
+      try { const u = await this._sb.auth.getUser(); if (u && u.data && u.data.user) exam.teacher_id = u.data.user.id; } catch(_) {}
+    }
+    exam.anti_cheat_config = Object.assign({tab_switch:true,window_blur:true,copy_paste:true,right_click:true,fullscreen:true,watermark:true,devtools:true,max_violations:5}, exam.anti_cheat_config || {});
+    const bank=(Array.isArray(exam.csv_data)&&exam.csv_data.length)?exam.csv_data:((Array.isArray(exam.questions)&&exam.questions.length)?exam.questions:[]);
+    if(bank.length){exam.csv_data=bank;exam.questions=bank;}
+    /* V10.4: random 6-char codes can collide with an existing exam (unique
+       constraint) — regenerate and retry instead of surfacing a cryptic
+       duplicate-key error to the teacher. */
+    let res = await this._sb.from('cbt_exams').insert(exam).select().single();
+    for (let attempt = 0; attempt < 3 && res.error && /duplicate key|cbt_exams_code_key|unique/i.test(String(res.error.message||'')); attempt++) {
+      exam.code = this._generateCode(6).toUpperCase();
+      res = await this._sb.from('cbt_exams').insert(exam).select().single();
+    }
+    /* V10.4: translate the raw RLS rejection into the actual causes and the
+       fixes, instead of leaving the teacher staring at "row-level security". */
+    if (res.error && /row-level security|42501/i.test(String(res.error.message||'') + String(res.error.code||''))) {
+      const who = (window.SC_PROFILE && (SC_PROFILE.full_name || SC_PROFILE.email)) || 'your account';
+      res.error = { ...res.error, message:
+        'The database refused this exam for ' + who + ' (row-level security). Likely causes, in order:\n' +
+        '1) Your school database has not run database/v10.4-cbt-multisubject-rls.sql — required for MULTI-SUBJECT packages created by teachers (admin: run it once in Supabase).\n' +
+        '2) The subject "' + (exam.subject||'') + '" is not assigned to you on the Subjects page (admin can assign it, or an admin account can create the exam).\n' +
+        '3) Your profile had not finished loading — wait two seconds after sign-in and try again.\n' +
+        'Admins are never blocked; ask an admin to create it if urgent.' };
+    }
+    return res;
+  },
   _generateCode(len) { const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let r=''; for(let i=0;i<len;i++) r+=chars.charAt(Math.floor(Math.random()*chars.length)); return r; },
 
   advancedPromptTemplate(subject, klass, topic, count) {
@@ -271,15 +335,37 @@ const CBT = {
   },
 
   validateQuestionBank(questions) {
-    const manualTypes=new Set(['essay','long_answer','file_upload']);
+    /* V10.3: code / oral / peer-review join essay in the teacher-marked
+       family, and structured types (matching, ordering, matrix…) count a
+       populated Items/Pairs column as their answer key — matching the
+       server-side keyed check in database/v10.3.
+       V10.6 ROOT-CAUSE FIX (reported: cloze/ordering rows with perfect Items
+       keys rejected as "correct answer key is missing"): this check used to
+       lean on window.CBTTypes.parseList — but cbt.html / cbt-multi.html do
+       not load cbt-types.js, so the fallback silently never ran and every
+       structured row failed validation. The engine now carries its OWN
+       items reader and alias map, so validation is self-sufficient on every
+       page. */
+    const manualTypes=new Set(['essay','long_answer','file_upload','code','oral_prompt','peer_review']);
+    const structuredTypes=new Set(['matching','ordering','categorization','matrix','multi_numeric','cloze','hot_text']);
+    const LOCAL_ALIAS={mrq:'multi_select',tf:'true_false',short:'short_answer',fill_blank:'cloze',fill:'cloze',gap_fill:'cloze',gapfill:'cloze',classification:'categorization',sorting:'categorization',grouping:'categorization',likert:'matrix',grid:'matrix',drag_drop:'ordering',dragdrop:'ordering',timeline:'ordering',sequence:'ordering',sequencing:'ordering',ranking:'ordering',error_spotting:'hot_text',hottext:'hot_text',multinumeric:'multi_numeric',multi_part_numeric:'multi_numeric',oral_prompt:'essay',peer_review:'essay',long_answer:'essay',code_output:'code'};
+    const canon=t=>{const x=String(t||'mcq').toLowerCase().replace(/[\s\/\\-]+/g,'_');return (window.CBTTypes&&CBTTypes.ALIAS&&CBTTypes.ALIAS[x])||LOCAL_ALIAS[x]||x;};
+    const localParseList=v=>{ if(v==null||v==='')return[]; if(Array.isArray(v))return v; if(typeof v==='object')return Object.values(v);
+      const s=String(v).trim();
+      if(s.charAt(0)==='['||s.charAt(0)==='{'){try{const p=JSON.parse(s);return Array.isArray(p)?p:[p];}catch(_){}}
+      return s.split(/\s*[|;]\s*/).filter(Boolean); };
     const errors=[],warnings=[];
     (questions||[]).forEach((raw,i)=>{
-      const q=this.normalizeQuestion(raw,i), label='Question '+(i+1);
+      const q=this.normalizeQuestion(raw,i), label='Question '+(i+1), ct=canon(q.type);
       if(!String(q.question||'').trim()) errors.push(label+': question text is missing.');
-      const missing=q.answer==null || (typeof q.answer==='string'&&!q.answer.trim()) || (Array.isArray(q.answer)&&!q.answer.length);
-      if(missing && !manualTypes.has(q.type)) errors.push(label+': correct answer key is missing. Check the CorrectAnswer/Correct Answer column.');
-      if(['mcq','true_false','multi_select'].includes(q.type) && q.options.length<2) errors.push(label+': at least two options are required for '+q.type+'.');
-      if(manualTypes.has(q.type)&&missing) warnings.push(label+': requires manual review and is excluded from automatic percentage.');
+      let missing=q.answer==null || (typeof q.answer==='string'&&!q.answer.trim()) || (Array.isArray(q.answer)&&!q.answer.length);
+      if(missing && structuredTypes.has(ct)){
+        const its=localParseList(q.items!=null&&q.items!==''?q.items:q.pairs);
+        if(its.length) missing=false;
+      }
+      if(missing && !manualTypes.has(ct)) errors.push(label+': correct answer key is missing. Check the CorrectAnswer column (or the Items/Pairs column for structured types).');
+      if(['mcq','true_false','multi_select'].includes(ct) && q.options.length<2) errors.push(label+': at least two options are required for '+q.type+'.');
+      if(manualTypes.has(ct)&&missing) warnings.push(label+': requires manual review and is excluded from automatic percentage.');
     });
     return {ok:errors.length===0,errors,warnings,question_count:(questions||[]).length,engine_version:'v5.1'};
   },
@@ -317,12 +403,24 @@ const CBT = {
         mark: Number(get('mark','marks','score','points') || 1) || 1,
         difficulty: get('difficulty','level') || '',
         topic: get('topic','lesson') || '',
-        tolerance: get('tolerance','accept') || '',
+        tolerance: get('tolerance') || '',
         section: get('section','subject','subject_section','exam_subject') || '',
         subject: get('subject','section','subject_section','exam_subject') || '',
         passage: get('passage','context','case_text','comprehension') || '',
-        media_url: get('media_url','media','image_url','image','audio_url','video_url') || ''
+        media_url: get('media_url','media','image_url','image','audio_url','video_url') || '',
+        /* V10.3: the 17-column contract (Tutoring Connect parity) —
+           Question,A,B,C,D,CorrectAnswer,Explanation,Type,Tolerance,Unit,
+           Accept,MRQ_AON,Pairs,Items,Difficulty,Tags,Section. JSON lives in
+           Pairs/Items with doubled inner quotes; parseCSVRows already
+           unescapes them, cbt-types.js parses the JSON lazily. */
+        unit: get('unit') || '',
+        accept: get('accept','accepted_answers','alternatives') || '',
+        mrq_aon: get('mrq_aon','mrqaon','all_or_nothing') || '',
+        pairs: get('pairs') || '',
+        items: get('items') || '',
+        tags: get('tags') || ''
       };
+      if (!q.tolerance && !q.items && !q.pairs) q.tolerance = get('accept') && /^[0-9.]+$/.test(get('accept')) ? get('accept') : q.tolerance;
       questions.push(this.normalizeQuestion(q, i));
     });
     return questions;
@@ -347,13 +445,114 @@ const CBT = {
       if (typeof toast === 'function') toast('Calculator is only available during CBT exams.', 'info', 4000);
       return;
     }
-    const existing=document.getElementById('cbt-calculator'); if(existing){existing.remove();return;} const calc=document.createElement('div'); calc.id='cbt-calculator'; calc.style.cssText='position:fixed;bottom:90px;right:20px;background:white;border:2px solid #e2e8f0;border-radius:16px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,.15);z-index:10000;width:280px;font-family:sans-serif;'; this._renderCalculatorHTML(calc); document.body.appendChild(calc); },
-  _renderCalculatorHTML(calc) { const basic=['7','8','9','÷','4','5','6','×','1','2','3','-','0','.','⌫','+']; const scientific=['sin','cos','tan','π','√','x²','ln','log','(',')']; calc.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><strong>🧮 Calculator</strong><button onclick="CBT.toggleCalcMode()" class="btn btn-sm btn-outline">'+(this.calcState.mode==='basic'?'Basic':'Scientific')+'</button><button onclick="document.getElementById(\'cbt-calculator\').remove()" class="btn btn-sm btn-outline">×</button></div><input id="calc-display" value="'+this.calcState.display+'" style="width:100%;font-size:24px;padding:10px;text-align:right;margin-bottom:10px;border:1px solid #cbd5e1;border-radius:8px" readonly>'+(this.calcState.mode==='scientific'?'<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-bottom:8px">'+scientific.map(b=>'<button onclick="CBT.calcInput(\''+b+'\')">'+b+'</button>').join('')+'</div>':'')+'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:5px">'+basic.map(b=>'<button onclick="CBT.calcInput(\''+b+'\')" style="padding:10px">'+b+'</button>').join('')+'</div><div style="display:flex;gap:8px;margin-top:10px"><button onclick="CBT.calcClear()" style="flex:1">C</button><button onclick="CBT.calcEquals()" style="flex:2">=</button></div>'; },
+    const existing=document.getElementById('cbt-calculator'); if(existing){existing.remove();return;} const calc=document.createElement('div'); calc.id='cbt-calculator'; calc.style.cssText='position:fixed;bottom:90px;right:20px;background:white;border:2px solid #e2e8f0;border-radius:16px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,.15);z-index:10000;width:300px;max-width:94vw;font-family:sans-serif;'; this._renderCalculatorHTML(calc); document.body.appendChild(calc); },
+  /* V10.6 (#2): FULL scientific calculator. Adds asin/acos/atan, powers (xʸ),
+     eˣ, 10ˣ, 1/x, x!, |x|, mod, e, DEG/RAD toggle, Ans recall and a working
+     memory set (MC/MR/M+/M−). Expressions are evaluated by a SAFE tokenising
+     parser — no eval(). */
+  _renderCalculatorHTML(calc) {
+    const st=this.calcState; st.deg=(st.deg!==false);
+    const basic=['7','8','9','÷','4','5','6','×','1','2','3','−','0','.','⌫','+'];
+    const sci1=['sin','cos','tan','π','√','asin','acos','atan','e','xʸ'];
+    const sci2=['x²','x³','ln','log','10ˣ','eˣ','1/x','x!','|x|','mod'];
+    const mem=['MC','MR','M+','M−','Ans','(' ,')','%',st.deg?'DEG':'RAD','C'];
+    const btn=(b,extra)=>'<button onclick="CBT.calcInput(\''+b.replace(/'/g,"\\'")+'\')" style="padding:9px 4px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;font-size:13px;font-weight:700;cursor:pointer'+(extra||'')+'">'+b+'</button>';
+    calc.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><strong>🧮 Calculator</strong><span><button onclick="CBT.toggleCalcMode()" class="btn btn-sm btn-outline">'+(st.mode==='basic'?'Basic ▸ Sci':'Scientific')+'</button> <button onclick="document.getElementById(\'cbt-calculator\').remove()" class="btn btn-sm btn-outline">×</button></span></div>'+
+      '<input id="calc-display" value="'+String(st.display||'').replace(/"/g,'&quot;')+'" style="width:100%;font-size:22px;padding:10px;text-align:right;margin-bottom:4px;border:1px solid #cbd5e1;border-radius:8px" inputmode="none">'+
+      '<div style="display:flex;justify-content:space-between;font-size:11px;color:#64748b;margin-bottom:8px"><span>'+(st.deg?'DEG':'RAD')+' · M='+(st.memory||0)+'</span><span>Ans='+(st.ans!=null?st.ans:'—')+'</span></div>'+
+      (st.mode==='scientific'
+        ? '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:6px">'+sci1.map(b=>btn(b)).join('')+'</div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:6px">'+sci2.map(b=>btn(b)).join('')+'</div>'
+        : '')+
+      '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:4px;margin-bottom:6px">'+mem.map(b=>btn(b)).join('')+'</div>'+
+      '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">'+basic.map(b=>btn(b)).join('')+'</div>'+
+      '<div style="display:flex;gap:8px;margin-top:8px"><button onclick="CBT.calcInput(\'CE\')" style="flex:1;padding:10px;border:1px solid #fca5a5;color:#b91c1c;border-radius:8px;background:#fef2f2;font-weight:800">CE</button><button onclick="CBT.calcEquals()" style="flex:2;padding:10px;border:0;border-radius:8px;background:linear-gradient(135deg,#0506ae,#964eec);color:#fff;font-weight:800;font-size:16px">=</button></div>';
+  },
   toggleCalcMode(){ this.calcState.mode=this.calcState.mode==='basic'?'scientific':'basic'; const c=document.getElementById('cbt-calculator'); if(c)this._renderCalculatorHTML(c); },
-  calcInput(v){ const d=document.getElementById('calc-display'); if(!d)return; if(v==='⌫'){d.value=d.value.slice(0,-1);} else if(v==='x²'){d.value=Math.pow(Number(d.value)||0,2);} else if(v==='π'){d.value+=Math.PI;} else d.value+=v; this.calcState.display=d.value; },
+  calcInput(v){ const d=document.getElementById('calc-display'); if(!d)return; const st=this.calcState;
+    const fns={sin:1,cos:1,tan:1,asin:1,acos:1,atan:1,ln:1,log:1};
+    if(v==='⌫')d.value=d.value.slice(0,-1);
+    else if(v==='C'||v==='CE'){d.value='';}
+    else if(v==='DEG'||v==='RAD'){st.deg=!st.deg;this._renderCalculatorHTML(document.getElementById('cbt-calculator'));return;}
+    else if(v==='MC'){st.memory=0;this._renderCalculatorHTML(document.getElementById('cbt-calculator'));return;}
+    else if(v==='MR')d.value+=String(st.memory||0);
+    else if(v==='M+'||v==='M−'){const cur=this.calcEval(d.value);if(cur!=null&&isFinite(cur)){st.memory=(Number(st.memory)||0)+(v==='M+'?cur:-cur);this._renderCalculatorHTML(document.getElementById('cbt-calculator'));}return;}
+    else if(v==='Ans')d.value+=String(st.ans!=null?st.ans:0);
+    else if(v==='π')d.value+='π';
+    else if(v==='e')d.value+='e';
+    else if(v==='√')d.value+='√(';
+    else if(fns[v])d.value+=v+'(';
+    else if(v==='x²')d.value+='^2';
+    else if(v==='x³')d.value+='^3';
+    else if(v==='xʸ')d.value+='^';
+    else if(v==='10ˣ')d.value+='10^';
+    else if(v==='eˣ')d.value+='e^';
+    else if(v==='1/x')d.value='1/('+(d.value||'0')+')';
+    else if(v==='x!')d.value+='!';
+    else if(v==='|x|')d.value='abs('+(d.value||'0')+')';
+    else if(v==='mod')d.value+=' mod ';
+    else if(v==='−')d.value+='-';
+    else d.value+=v;
+    st.display=d.value;
+  },
   calcClear(){ const d=document.getElementById('calc-display'); if(d){d.value='';this.calcState.display='';} },
-  calcEquals(){ const d=document.getElementById('calc-display'); if(!d)return; try{ d.value=String(eval(d.value.replace(/÷/g,'/').replace(/×/g,'*'))); this.calcState.display=d.value; }catch(e){d.value='Error';this.calcState.display='';} },
+  /* SAFE expression evaluator — tokeniser + shunting-yard, no eval(). */
+  calcEval(expr){
+    try{
+      let s=String(expr||'').replace(/×/g,'*').replace(/÷/g,'/').replace(/−/g,'-').replace(/π/g,'('+Math.PI+')').replace(/\be\b/g,'('+Math.E+')').replace(/√/g,'sqrt').replace(/\bmod\b/gi,'%').replace(/(\d+(?:\.\d+)?)%(?!\d)/g,'($1/100)');
+      const deg=this.calcState.deg!==false;
+      const toRad=x=>deg?x*Math.PI/180:x, fromRad=x=>deg?x*180/Math.PI:x;
+      const F={sin:x=>Math.sin(toRad(x)),cos:x=>Math.cos(toRad(x)),tan:x=>Math.tan(toRad(x)),asin:x=>fromRad(Math.asin(x)),acos:x=>fromRad(Math.acos(x)),atan:x=>fromRad(Math.atan(x)),ln:x=>Math.log(x),log:x=>Math.log10(x),sqrt:x=>Math.sqrt(x),abs:x=>Math.abs(x)};
+      const fact=n=>{if(n<0||n!==Math.floor(n)||n>170)return NaN;let r=1;for(let i=2;i<=n;i++)r*=i;return r;};
+      const toks=[];let i=0;
+      while(i<s.length){const c=s[i];
+        if(/\s/.test(c)){i++;continue;}
+        if(/[0-9.]/.test(c)){let j=i;while(j<s.length&&/[0-9.eE]/.test(s[j])){if((s[j]==='e'||s[j]==='E')&&!/[0-9+\-]/.test(s[j+1]||''))break;if((s[j]==='e'||s[j]==='E')&&/[+\-]/.test(s[j+1]||''))j++;j++;}toks.push({t:'n',v:parseFloat(s.slice(i,j))});i=j;continue;}
+        if(/[a-z]/i.test(c)){let j=i;while(j<s.length&&/[a-z]/i.test(s[j]))j++;const name=s.slice(i,j).toLowerCase();if(F[name]){toks.push({t:'f',v:name});i=j;continue;}throw Error('fn');}
+        if('+-*/%^()!'.includes(c)){toks.push({t:c==='('?'(':c===')'?')':'o',v:c});i++;continue;}
+        throw Error('tok');
+      }
+      // unary minus → 0 - x
+      const out=[],ops=[];const prec={'+':1,'-':1,'*':2,'/':2,'%':2,'^':3,'!':4};const rightAssoc={'^':1};
+      let prev=null;
+      const popTo=(p,ra)=>{while(ops.length){const top=ops[ops.length-1];if(top.t==='o'&&(prec[top.v]>p||(prec[top.v]===p&&!ra)))out.push(ops.pop());else if(top.t==='f')out.push(ops.pop());else break;}};
+      for(const tk of toks){
+        if(tk.t==='n'){out.push(tk);prev=tk;continue;}
+        if(tk.t==='f'){ops.push(tk);prev=tk;continue;}
+        if(tk.t==='('){ops.push(tk);prev=tk;continue;}
+        if(tk.t===')'){while(ops.length&&ops[ops.length-1].t!=='(')out.push(ops.pop());if(!ops.length)throw Error('paren');ops.pop();if(ops.length&&ops[ops.length-1].t==='f')out.push(ops.pop());prev={t:'n'};continue;}
+        if(tk.v==='!'){out.push({t:'o',v:'!'});prev=tk;continue;}
+        if(tk.v==='-'&&(!prev||prev.t==='o'||prev.t==='(')){out.push({t:'n',v:0});ops.push({t:'o',v:'-'});prev=tk;continue;}
+        popTo(prec[tk.v],!!rightAssoc[tk.v]);ops.push(tk);prev=tk;
+      }
+      while(ops.length){const top=ops.pop();if(top.t==='(')throw Error('paren');out.push(top);}
+      const stck=[];
+      for(const tk of out){
+        if(tk.t==='n'){stck.push(tk.v);continue;}
+        if(tk.t==='f'){const a=stck.pop();stck.push(F[tk.v](a));continue;}
+        if(tk.v==='!'){const a=stck.pop();stck.push(fact(a));continue;}
+        const b=stck.pop(),a=stck.pop();
+        stck.push(tk.v==='+'?a+b:tk.v==='-'?a-b:tk.v==='*'?a*b:tk.v==='/'?a/b:tk.v==='%'?a%b:Math.pow(a,b));
+      }
+      const r=stck.pop();
+      return (typeof r==='number'&&isFinite(r))?Math.round(r*1e10)/1e10:null;
+    }catch(_){return null;}
+  },
+  calcEquals(){ const d=document.getElementById('calc-display'); if(!d)return; const r=this.calcEval(d.value); if(r==null){d.value='Error';this.calcState.display='';return;} d.value=String(r); this.calcState.display=d.value; this.calcState.ans=r; const info=document.getElementById('cbt-calculator'); if(info)this._renderCalculatorHTML(info); const nd=document.getElementById('calc-display'); if(nd)nd.value=String(r); },
   calcMemoryClear(){ this.calcState.memory=0; },
+  /* V10.6 (#2) ROOT-CAUSE FIX: insertMathSymbol read document.activeElement —
+     but CLICKING the keyboard button steals focus from the answer box, so
+     activeElement was the BUTTON and nothing was ever inserted. The engine
+     now remembers the last focused INPUT/TEXTAREA on the page (focusin
+     tracker) and keyboard buttons use mousedown+preventDefault so focus
+     never leaves the answer field in the first place. */
+  _lastAnswerField:null,
+  _trackAnswerFocus(){
+    if(this._focusTrackerOn)return; this._focusTrackerOn=true;
+    document.addEventListener('focusin',(e)=>{
+      const t=e.target;
+      if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA')&&!t.readOnly&&t.id!=='calc-display'&&!t.closest('#cbt-math-keyboard')&&!t.closest('#cbt-calculator'))CBT._lastAnswerField=t;
+    });
+  },
   toggleMathKeyboard(){
     // FIX #11: Only allow math keyboard on CBT exam pages
     const page = (location.pathname.split('/').pop() || '').replace('.html','');
@@ -361,8 +560,42 @@ const CBT = {
       if (typeof toast === 'function') toast('Math keyboard is only available during CBT exams.', 'info', 4000);
       return;
     }
-    const existing=document.getElementById('cbt-math-keyboard'); if(existing){existing.remove();return;} const kb=document.createElement('div'); kb.id='cbt-math-keyboard'; kb.style.cssText='position:fixed;bottom:160px;right:20px;background:white;border:2px solid #e2e8f0;border-radius:16px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,.15);z-index:10000;max-width:340px'; const syms=['+','-','×','÷','=','(',')','²','³','√','π','%','≤','≥','≠','≈','α','β','θ']; kb.innerHTML='<div style="display:flex;justify-content:space-between"><strong>⌨️ Math Keyboard</strong><button onclick="document.getElementById(\'cbt-math-keyboard\').remove()">×</button></div><p style="font-size:12px;color:#64748b">Click inside an answer field, then click a symbol.</p><div style="display:flex;flex-wrap:wrap;gap:5px">'+syms.map(s=>'<button onclick="CBT.insertMathSymbol(\''+s+'\')" style="min-width:36px;height:36px">'+s+'</button>').join('')+'</div>'; document.body.appendChild(kb); },
-  insertMathSymbol(sym){ const a=document.activeElement; if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')){ const st=a.selectionStart||a.value.length; a.value=a.value.slice(0,st)+sym+a.value.slice(a.selectionEnd||st); a.setSelectionRange(st+sym.length,st+sym.length); a.focus(); a.dispatchEvent(new Event('input',{bubbles:true})); } else if(typeof toast==='function') toast('Click inside an answer field first','info'); }
+    const existing=document.getElementById('cbt-math-keyboard'); if(existing){existing.remove();return;}
+    this._trackAnswerFocus();
+    const kb=document.createElement('div'); kb.id='cbt-math-keyboard';
+    kb.style.cssText='position:fixed;bottom:160px;right:20px;background:white;border:2px solid #e2e8f0;border-radius:16px;padding:14px;box-shadow:0 20px 50px rgba(0,0,0,.15);z-index:10000;max-width:380px;max-height:60vh;overflow:auto';
+    /* V10.6 (#2): expanded symbol set — operators, comparisons, powers/roots,
+       fractions, Greek letters, set/logic, arrows, geometry, chemistry. */
+    const groups=[
+      ['Operators',['+','−','×','÷','±','=','≠','≈','<','>','≤','≥','∝','%','‰']],
+      ['Powers & roots',['²','³','⁴','ⁿ','^','√','∛','x²','x³','xⁿ','⁰','¹','⁻¹']],
+      ['Fractions',['½','⅓','¼','⅔','¾','⅕','⅛','/','⁄']],
+      ['Greek',['α','β','γ','δ','Δ','θ','λ','μ','π','ρ','σ','Σ','τ','φ','ω','Ω']],
+      ['Algebra & calculus',['ƒ','∫','∂','∞','∑','∏','!','|x|','→','⇒','⇌','∴','∵']],
+      ['Set & logic',['∈','∉','⊂','⊆','∪','∩','∅','∧','∨','¬']],
+      ['Geometry',['°','∠','⊥','∥','≅','~','△','□','⊙']],
+      ['Science',['·','⁺','⁻','₀','₁','₂','₃','₄','ₓ','℃','℉','Å','µ']]
+    ];
+    kb.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center"><strong>⌨️ Math Keyboard</strong><button onclick="document.getElementById(\'cbt-math-keyboard\').remove()" style="border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;width:28px;height:28px;cursor:pointer">×</button></div>'+
+      '<p style="font-size:12px;color:#64748b;margin:6px 0">Tap inside an answer box, then tap symbols — they insert at the cursor.</p>'+
+      groups.map(g=>'<div style="font-size:10px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#94a3b8;margin:8px 0 3px">'+g[0]+'</div><div style="display:flex;flex-wrap:wrap;gap:4px">'+g[1].map(s=>'<button data-sym="'+s.replace(/"/g,'&quot;')+'" style="min-width:34px;height:34px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;font-size:15px;cursor:pointer">'+s+'</button>').join('')+'</div>').join('');
+    /* mousedown + preventDefault = the answer field NEVER loses focus. */
+    kb.addEventListener('mousedown',(e)=>{const b=e.target.closest('[data-sym]');if(b){e.preventDefault();CBT.insertMathSymbol(b.getAttribute('data-sym'));}});
+    document.body.appendChild(kb);
+  },
+  insertMathSymbol(sym){
+    if(sym==='x²')sym='²';else if(sym==='x³')sym='³';else if(sym==='xⁿ')sym='ⁿ';else if(sym==='|x|')sym='| |';
+    let a=document.activeElement;
+    if(!(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')&&!a.readOnly&&a.id!=='calc-display'))a=this._lastAnswerField;
+    if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA')&&document.contains(a)&&!a.readOnly){
+      const st=(a.selectionStart!=null?a.selectionStart:a.value.length), en=(a.selectionEnd!=null?a.selectionEnd:st);
+      a.value=a.value.slice(0,st)+sym+a.value.slice(en);
+      try{a.setSelectionRange(st+sym.length,st+sym.length);}catch(_){}
+      a.focus();
+      a.dispatchEvent(new Event('input',{bubbles:true}));
+      a.dispatchEvent(new Event('change',{bubbles:true}));
+    } else if(typeof toast==='function') toast('Tap inside an answer field first, then tap a symbol.','info');
+  }
 };
 
 
